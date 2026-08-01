@@ -19,12 +19,12 @@ func TestOthersConnUnimplemented(t *testing.T) {
 			want, got)
 	}
 
-	if got := c.Send(Message{}); want != got {
+	if got := c.Send(Message{}, 0, 0); want != got {
 		t.Fatalf("unexpected error during c.Send:\n- want: %v\n-  got: %v",
 			want, got)
 	}
 
-	if got := c.SendMessages(nil); want != got {
+	if got := c.SendMessages(nil, 0); want != got {
 		t.Fatalf("unexpected error during c.SendMessages:\n- want: %v\n-  got: %v",
 			want, got)
 	}

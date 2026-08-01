@@ -57,8 +57,8 @@ type Conn struct {
 // the functionality of the Conn type. Do not use.
 type Socket interface {
 	Close() error
-	Send(m Message) error
-	SendMessages(m []Message) error
+	Send(m Message, pid uint32, group uint32) error
+	SendMessages(m []Message, pid uint32) error
 	Receive() ([]Message, error)
 	ReceiveIter() iter.Seq2[Message, error]
 }
@@ -138,7 +138,7 @@ func (c *Conn) Execute(m Message) ([]Message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req, err := c.lockedSend(m)
+	req, err := c.lockedSend(m, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +157,20 @@ func (c *Conn) Execute(m Message) ([]Message, error) {
 
 // SendMessages sends multiple Messages to netlink. The handling of
 // a Header's Length, Sequence and PID fields is the same as when
-// calling Send.
+// calling Send. Messages are sent to the kernel (unicast port ID 0).
+//
+// To send to a specific userspace port ID, use SendMessagesTo.
 func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
+	return c.SendMessagesTo(msgs, 0)
+}
+
+// SendMessagesTo is like SendMessages, but sends the messages to the
+// unicast netlink port ID specified by pid. A pid of 0 sends to the
+// kernel, matching the behavior of SendMessages.
+//
+// SendMessagesTo is useful for userspace-to-userspace netlink
+// communication. See also SendTo, Config.PID, and Conn.PID.
+func (c *Conn) SendMessagesTo(msgs []Message, pid uint32) ([]Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -173,7 +185,7 @@ func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
 		}
 	})
 
-	if err := c.sock.SendMessages(msgs); err != nil {
+	if err := c.sock.SendMessages(msgs, pid); err != nil {
 		c.debug(func(d *debugger) {
 			d.debugf(1, "send msgs: err: %v", err)
 		})
@@ -197,25 +209,63 @@ func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
 //
 // If Header.PID is 0, it will be automatically populated using a PID
 // assigned by netlink.
+//
+// Send delivers the message to the kernel (unicast port ID 0). To send
+// to a specific userspace port ID, use SendTo. To send to a multicast
+// group, use Multicast.
 func (c *Conn) Send(m Message) (Message, error) {
+	return c.SendTo(m, 0)
+}
+
+// SendTo is like Send, but sends the message to the unicast netlink
+// port ID specified by pid. A pid of 0 sends to the kernel, matching
+// the behavior of Send.
+//
+// SendTo is useful for userspace-to-userspace netlink communication,
+// where pid is typically the port ID of a peer Conn. See also
+// Config.PID and Conn.PID.
+func (c *Conn) SendTo(m Message, pid uint32) (Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.lockedSend(m)
+	return c.lockedSend(m, pid, 0)
+}
+
+// Multicast is like Send, but sends the message to the multicast
+// group(s) identified by group. group is a bit mask of multicast
+// groups, matching the semantics of Config.Groups and
+// unix.SockaddrNetlink.Groups. A group of 0 does not target any
+// multicast groups.
+//
+// Multicast only controls the send destination; it does not join any
+// groups. Use JoinGroup or Config.Groups to receive multicast messages.
+// Sending or receiving netlink multicast messages typically requires
+// CAP_NET_ADMIN (see netlink(7)).
+//
+// On some netlink families such as NETLINK_USERSOCK, the kernel may
+// return ECONNREFUSED from sendmsg even when multicast delivery
+// succeeds, because sendmsg also attempts a unicast delivery to port
+// ID 0 (the kernel), which is not a valid peer for that family.
+func (c *Conn) Multicast(m Message, group uint32) (Message, error) {
+	// Wait for any concurrent calls to Execute to finish before proceeding.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.lockedSend(m, 0, group)
 }
 
 // lockedSend implements Send, but must be called with c.mu acquired for reading.
 // We rely on the kernel to deal with concurrent reads and writes to the netlink
 // socket itself.
-func (c *Conn) lockedSend(m Message) (Message, error) {
+func (c *Conn) lockedSend(m Message, pid uint32, group uint32) (Message, error) {
 	c.fixMsg(&m, nlmsgLength(len(m.Data)))
 
 	c.debug(func(d *debugger) {
 		d.debugf(1, "send: %+v", m)
 	})
 
-	if err := c.sock.Send(m); err != nil {
+	if err := c.sock.Send(m, pid, group); err != nil {
 		c.debug(func(d *debugger) {
 			d.debugf(1, "send: err: %v", err)
 		})
