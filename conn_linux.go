@@ -103,25 +103,25 @@ func newConn(s *socket.Conn, config *Config) (*conn, uint32, error) {
 }
 
 // SendMessages serializes multiple Messages and sends them to netlink.
-func (c *conn) SendMessages(messages []Message) error {
+func (c *conn) SendMessages(messages []Message, pid uint32) error {
 	buf, err := marshalMessages(messages)
 	if err != nil {
 		return err
 	}
 
-	sa := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
+	sa := &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Pid: pid}
 	_, err = c.s.Sendmsg(context.Background(), buf, nil, sa, 0)
 	return err
 }
 
 // Send sends a single Message to netlink.
-func (c *conn) Send(m Message) error {
+func (c *conn) Send(m Message, pid uint32, group uint32) error {
 	b, err := m.MarshalBinary()
 	if err != nil {
 		return err
 	}
 
-	sa := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
+	sa := &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Pid: pid, Groups: group}
 	_, err = c.s.Sendmsg(context.Background(), b, nil, sa, 0)
 	return err
 }

@@ -92,6 +92,32 @@ func TestConnSend(t *testing.T) {
 				want, got)
 		}
 	}
+	// Repeat with SendTo
+	for i := 0; i < 50; i++ {
+		out, err := c.SendTo(netlink.Message{}, 0)
+		if err != nil {
+			t.Fatalf("failed to send message using SendTo: %v", err)
+		}
+
+		seq++
+		if want, got := seq, out.Header.Sequence; want != got {
+			t.Fatalf("unexpected sequence number:\n- want: %v\n-  got: %v",
+				want, got)
+		}
+	}
+	// Repeat with Multicast
+	for i := 0; i < 50; i++ {
+		out, err := c.Multicast(netlink.Message{}, 0)
+		if err != nil {
+			t.Fatalf("failed to multicast message: %v", err)
+		}
+
+		seq++
+		if want, got := seq, out.Header.Sequence; want != got {
+			t.Fatalf("unexpected sequence number:\n- want: %v\n-  got: %v",
+				want, got)
+		}
+	}
 }
 
 func TestConnExecuteMultipart(t *testing.T) {

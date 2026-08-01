@@ -57,8 +57,8 @@ type Conn struct {
 // the functionality of the Conn type. Do not use.
 type Socket interface {
 	Close() error
-	Send(m Message) error
-	SendMessages(m []Message) error
+	Send(m Message, pid uint32, group uint32) error
+	SendMessages(m []Message, pid uint32) error
 	Receive() ([]Message, error)
 	ReceiveIter() iter.Seq2[Message, error]
 }
@@ -138,7 +138,7 @@ func (c *Conn) Execute(m Message) ([]Message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req, err := c.lockedSend(m)
+	req, err := c.lockedSend(m, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +159,11 @@ func (c *Conn) Execute(m Message) ([]Message, error) {
 // a Header's Length, Sequence and PID fields is the same as when
 // calling Send.
 func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
+	return c.SendMessagesTo(msgs, 0)
+}
+
+// Same as SendMessages, except to a specified destiantion.
+func (c *Conn) SendMessagesTo(msgs []Message, pid uint32) ([]Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -173,7 +178,7 @@ func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
 		}
 	})
 
-	if err := c.sock.SendMessages(msgs); err != nil {
+	if err := c.sock.SendMessages(msgs, pid); err != nil {
 		c.debug(func(d *debugger) {
 			d.debugf(1, "send msgs: err: %v", err)
 		})
@@ -198,24 +203,38 @@ func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
 // If Header.PID is 0, it will be automatically populated using a PID
 // assigned by netlink.
 func (c *Conn) Send(m Message) (Message, error) {
+	return c.SendTo(m, 0)
+}
+
+// Same as Send, except to a specified destiantion.
+func (c *Conn) SendTo(m Message, pid uint32) (Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.lockedSend(m)
+	return c.lockedSend(m, pid, 0)
+}
+
+// Same as Send, except multicast to a specified group.
+func (c *Conn) Multicast(m Message, group uint32) (Message, error) {
+	// Wait for any concurrent calls to Execute to finish before proceeding.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.lockedSend(m, 0, group)
 }
 
 // lockedSend implements Send, but must be called with c.mu acquired for reading.
 // We rely on the kernel to deal with concurrent reads and writes to the netlink
 // socket itself.
-func (c *Conn) lockedSend(m Message) (Message, error) {
+func (c *Conn) lockedSend(m Message, pid uint32, group uint32) (Message, error) {
 	c.fixMsg(&m, nlmsgLength(len(m.Data)))
 
 	c.debug(func(d *debugger) {
 		d.debugf(1, "send: %+v", m)
 	})
 
-	if err := c.sock.Send(m); err != nil {
+	if err := c.sock.Send(m, pid, group); err != nil {
 		c.debug(func(d *debugger) {
 			d.debugf(1, "send: err: %v", err)
 		})
