@@ -550,9 +550,13 @@ func (s *blockingSocket) Close() error {
 	s.closeOnce.Do(func() { close(s.doneC) })
 	return nil
 }
-func (s *blockingSocket) Send(_ netlink.Message) error           { return nil }
-func (s *blockingSocket) SendMessages(_ []netlink.Message) error { return nil }
-func (s *blockingSocket) Receive() ([]netlink.Message, error)    { return nil, nil }
+func (s *blockingSocket) Send(_ netlink.Message, _ uint32, _ uint32) error {
+	return nil
+}
+func (s *blockingSocket) SendMessages(_ []netlink.Message, _ uint32) error {
+	return nil
+}
+func (s *blockingSocket) Receive() ([]netlink.Message, error) { return nil, nil }
 func (s *blockingSocket) ReceiveIter() iter.Seq2[netlink.Message, error] {
 	return func(_ func(netlink.Message, error) bool) {
 		s.receivingOnce.Do(func() { close(s.receivingC) })
@@ -1224,6 +1228,173 @@ func TestIntegrationConnMessageBufferSize(t *testing.T) {
 				t.Fatalf("failed to execute request: %v", err)
 			}
 		})
+	}
+}
+
+func TestIntegrationConnSendTo(t *testing.T) {
+	t.Parallel()
+
+	// Bounce a message between two userspace PIDs using NETLINK_USERSOCK so
+	// the kernel does not try to interpret the payload.
+	dst, err := netlink.Dial(unix.NETLINK_USERSOCK, nil)
+	if err != nil {
+		t.Fatalf("failed to dial destination: %v", err)
+	}
+	defer dst.Close()
+
+	src, err := netlink.Dial(unix.NETLINK_USERSOCK, nil)
+	if err != nil {
+		t.Fatalf("failed to dial source: %v", err)
+	}
+	defer src.Close()
+
+	if err := dst.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("failed to set destination read deadline: %v", err)
+	}
+
+	want := []byte{0xde, 0xad, 0xbe, 0xef}
+	errC := make(chan error, 1)
+	var got []netlink.Message
+	go func() {
+		var err error
+		got, err = dst.Receive()
+		errC <- err
+	}()
+
+	if _, err := src.SendTo(netlink.Message{
+		Header: netlink.Header{
+			Type:  netlink.Noop,
+			Flags: netlink.Request,
+		},
+		Data: want,
+	}, dst.PID()); err != nil {
+		t.Fatalf("failed to SendTo destination: %v", err)
+	}
+
+	if err := <-errC; err != nil {
+		t.Fatalf("failed to receive message: %v", err)
+	}
+	if want, got := 1, len(got); want != got {
+		t.Fatalf("unexpected message count:\n- want: %v\n-  got: %v", want, got)
+	}
+	if diff := cmp.Diff(want, got[0].Data); diff != "" {
+		t.Fatalf("unexpected message payload (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(src.PID(), got[0].Header.PID); diff != "" {
+		t.Fatalf("unexpected message source PID (-want +got):\n%s", diff)
+	}
+}
+
+func TestIntegrationConnSendMessagesTo(t *testing.T) {
+	t.Parallel()
+
+	dst, err := netlink.Dial(unix.NETLINK_USERSOCK, nil)
+	if err != nil {
+		t.Fatalf("failed to dial destination: %v", err)
+	}
+	defer dst.Close()
+
+	src, err := netlink.Dial(unix.NETLINK_USERSOCK, nil)
+	if err != nil {
+		t.Fatalf("failed to dial source: %v", err)
+	}
+	defer src.Close()
+
+	if err := dst.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("failed to set destination read deadline: %v", err)
+	}
+
+	payloads := [][]byte{
+		{0x01, 0x02, 0x03, 0x04},
+		{0x05, 0x06, 0x07, 0x08},
+	}
+
+	errC := make(chan error, 1)
+	var got []netlink.Message
+	go func() {
+		var err error
+		got, err = dst.Receive()
+		errC <- err
+	}()
+
+	msgs := make([]netlink.Message, len(payloads))
+	for i, p := range payloads {
+		msgs[i] = netlink.Message{
+			Header: netlink.Header{
+				Type:  netlink.Noop,
+				Flags: netlink.Request,
+			},
+			Data: p,
+		}
+	}
+	if _, err := src.SendMessagesTo(msgs, dst.PID()); err != nil {
+		t.Fatalf("failed to SendMessagesTo destination: %v", err)
+	}
+
+	if err := <-errC; err != nil {
+		t.Fatalf("failed to receive messages: %v", err)
+	}
+	if want, got := len(payloads), len(got); want != got {
+		t.Fatalf("unexpected message count:\n- want: %v\n-  got: %v", want, got)
+	}
+	for i, p := range payloads {
+		if diff := cmp.Diff(p, got[i].Data); diff != "" {
+			t.Fatalf("unexpected payload %d (-want +got):\n%s", i, diff)
+		}
+	}
+}
+
+func TestIntegrationConnMulticast(t *testing.T) {
+	t.Parallel()
+
+	// Bit 0 of nl_groups selects multicast group 1 for NETLINK_USERSOCK.
+	const group = 1
+
+	dst, err := netlink.Dial(unix.NETLINK_USERSOCK, &netlink.Config{
+		Groups: group,
+	})
+	if err != nil {
+		t.Fatalf("failed to dial destination: %v", err)
+	}
+	defer dst.Close()
+
+	src, err := netlink.Dial(unix.NETLINK_USERSOCK, nil)
+	if err != nil {
+		t.Fatalf("failed to dial source: %v", err)
+	}
+	defer src.Close()
+
+	if err := dst.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("failed to set destination read deadline: %v", err)
+	}
+
+	want := []byte{0xca, 0xfe, 0xba, 0xbe}
+	errC := make(chan error, 1)
+	var got []netlink.Message
+	go func() {
+		var err error
+		got, err = dst.Receive()
+		errC <- err
+	}()
+
+	if _, err := src.Multicast(netlink.Message{
+		Header: netlink.Header{
+			Type:  netlink.Noop,
+			Flags: netlink.Request,
+		},
+		Data: want,
+	}, group); err != nil {
+		t.Fatalf("failed to Multicast message: %v", err)
+	}
+
+	if err := <-errC; err != nil {
+		t.Fatalf("failed to receive multicast message: %v", err)
+	}
+	if want, got := 1, len(got); want != got {
+		t.Fatalf("unexpected message count:\n- want: %v\n-  got: %v", want, got)
+	}
+	if diff := cmp.Diff(want, got[0].Data); diff != "" {
+		t.Fatalf("unexpected message payload (-want +got):\n%s", diff)
 	}
 }
 

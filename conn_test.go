@@ -3,6 +3,7 @@ package netlink_test
 import (
 	"errors"
 	"io"
+	"iter"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +13,40 @@ import (
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/nltest"
 )
+
+// recordingSocket is a netlink.Socket that records the destination address
+// passed to Send and SendMessages.
+type recordingSocket struct {
+	pid   uint32
+	group uint32
+	msgs  []netlink.Message
+}
+
+func (s *recordingSocket) Close() error { return nil }
+
+func (s *recordingSocket) Send(m netlink.Message, pid uint32, group uint32) error {
+	s.pid = pid
+	s.group = group
+	s.msgs = []netlink.Message{m}
+	return nil
+}
+
+func (s *recordingSocket) SendMessages(msgs []netlink.Message, pid uint32) error {
+	s.pid = pid
+	s.group = 0
+	s.msgs = msgs
+	return nil
+}
+
+func (s *recordingSocket) Receive() ([]netlink.Message, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *recordingSocket) ReceiveIter() iter.Seq2[netlink.Message, error] {
+	return func(yield func(netlink.Message, error) bool) {
+		yield(netlink.Message{}, errors.New("not implemented"))
+	}
+}
 
 func TestConnExecute(t *testing.T) {
 	req := netlink.Message{
@@ -92,31 +127,75 @@ func TestConnSend(t *testing.T) {
 				want, got)
 		}
 	}
-	// Repeat with SendTo
-	for i := 0; i < 50; i++ {
-		out, err := c.SendTo(netlink.Message{}, 0)
-		if err != nil {
-			t.Fatalf("failed to send message using SendTo: %v", err)
-		}
+}
 
-		seq++
-		if want, got := seq, out.Header.Sequence; want != got {
-			t.Fatalf("unexpected sequence number:\n- want: %v\n-  got: %v",
-				want, got)
-		}
+func TestConnSendDestination(t *testing.T) {
+	tests := []struct {
+		name      string
+		send      func(c *netlink.Conn) error
+		wantPID   uint32
+		wantGroup uint32
+	}{
+		{
+			name: "Send",
+			send: func(c *netlink.Conn) error {
+				_, err := c.Send(netlink.Message{})
+				return err
+			},
+		},
+		{
+			name: "SendTo",
+			send: func(c *netlink.Conn) error {
+				_, err := c.SendTo(netlink.Message{}, 42)
+				return err
+			},
+			wantPID: 42,
+		},
+		{
+			name: "Multicast",
+			send: func(c *netlink.Conn) error {
+				_, err := c.Multicast(netlink.Message{}, 0x5)
+				return err
+			},
+			wantGroup: 0x5,
+		},
+		{
+			name: "SendMessages",
+			send: func(c *netlink.Conn) error {
+				_, err := c.SendMessages([]netlink.Message{{}})
+				return err
+			},
+		},
+		{
+			name: "SendMessagesTo",
+			send: func(c *netlink.Conn) error {
+				_, err := c.SendMessagesTo([]netlink.Message{{}}, 99)
+				return err
+			},
+			wantPID: 99,
+		},
 	}
-	// Repeat with Multicast
-	for i := 0; i < 50; i++ {
-		out, err := c.Multicast(netlink.Message{}, 0)
-		if err != nil {
-			t.Fatalf("failed to multicast message: %v", err)
-		}
 
-		seq++
-		if want, got := seq, out.Header.Sequence; want != got {
-			t.Fatalf("unexpected sequence number:\n- want: %v\n-  got: %v",
-				want, got)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sock := &recordingSocket{}
+			c := netlink.NewConn(sock, 1)
+			defer c.Close()
+
+			if err := tt.send(c); err != nil {
+				t.Fatalf("failed to send: %v", err)
+			}
+
+			if diff := cmp.Diff(tt.wantPID, sock.pid); diff != "" {
+				t.Fatalf("unexpected destination pid (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantGroup, sock.group); diff != "" {
+				t.Fatalf("unexpected destination group (-want +got):\n%s", diff)
+			}
+			if len(sock.msgs) == 0 {
+				t.Fatal("no messages recorded by socket")
+			}
+		})
 	}
 }
 

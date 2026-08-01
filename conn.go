@@ -157,12 +157,19 @@ func (c *Conn) Execute(m Message) ([]Message, error) {
 
 // SendMessages sends multiple Messages to netlink. The handling of
 // a Header's Length, Sequence and PID fields is the same as when
-// calling Send.
+// calling Send. Messages are sent to the kernel (unicast port ID 0).
+//
+// To send to a specific userspace port ID, use SendMessagesTo.
 func (c *Conn) SendMessages(msgs []Message) ([]Message, error) {
 	return c.SendMessagesTo(msgs, 0)
 }
 
-// Same as SendMessages, except to a specified destiantion.
+// SendMessagesTo is like SendMessages, but sends the messages to the
+// unicast netlink port ID specified by pid. A pid of 0 sends to the
+// kernel, matching the behavior of SendMessages.
+//
+// SendMessagesTo is useful for userspace-to-userspace netlink
+// communication. See also SendTo, Config.PID, and Conn.PID.
 func (c *Conn) SendMessagesTo(msgs []Message, pid uint32) ([]Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
@@ -202,11 +209,21 @@ func (c *Conn) SendMessagesTo(msgs []Message, pid uint32) ([]Message, error) {
 //
 // If Header.PID is 0, it will be automatically populated using a PID
 // assigned by netlink.
+//
+// Send delivers the message to the kernel (unicast port ID 0). To send
+// to a specific userspace port ID, use SendTo. To send to a multicast
+// group, use Multicast.
 func (c *Conn) Send(m Message) (Message, error) {
 	return c.SendTo(m, 0)
 }
 
-// Same as Send, except to a specified destiantion.
+// SendTo is like Send, but sends the message to the unicast netlink
+// port ID specified by pid. A pid of 0 sends to the kernel, matching
+// the behavior of Send.
+//
+// SendTo is useful for userspace-to-userspace netlink communication,
+// where pid is typically the port ID of a peer Conn. See also
+// Config.PID and Conn.PID.
 func (c *Conn) SendTo(m Message, pid uint32) (Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
@@ -215,7 +232,14 @@ func (c *Conn) SendTo(m Message, pid uint32) (Message, error) {
 	return c.lockedSend(m, pid, 0)
 }
 
-// Same as Send, except multicast to a specified group.
+// Multicast is like Send, but sends the message to the multicast
+// group(s) identified by group. group is a bit mask of multicast
+// groups, matching the semantics of Config.Groups and
+// unix.SockaddrNetlink.Groups. A group of 0 does not target any
+// multicast groups.
+//
+// Multicast only controls the send destination; it does not join any
+// groups. Use JoinGroup or Config.Groups to receive multicast messages.
 func (c *Conn) Multicast(m Message, group uint32) (Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
