@@ -1348,12 +1348,16 @@ func TestIntegrationConnMulticast(t *testing.T) {
 	t.Parallel()
 
 	// Bit 0 of nl_groups selects multicast group 1 for NETLINK_USERSOCK.
+	// Joining/sending multicast groups requires CAP_NET_ADMIN (netlink(7)).
 	const group = 1
 
 	dst, err := netlink.Dial(unix.NETLINK_USERSOCK, &netlink.Config{
 		Groups: group,
 	})
 	if err != nil {
+		if errors.Is(err, unix.EPERM) {
+			t.Skipf("skipping, CAP_NET_ADMIN required to join multicast groups: %v", err)
+		}
 		t.Fatalf("failed to dial destination: %v", err)
 	}
 	defer dst.Close()
@@ -1377,13 +1381,16 @@ func TestIntegrationConnMulticast(t *testing.T) {
 		errC <- err
 	}()
 
+	// Multicast send may return ECONNREFUSED on NETLINK_USERSOCK because
+	// the kernel also attempts unicast delivery to port ID 0. Delivery to
+	// joined listeners can still succeed; assert that below.
 	if _, err := src.Multicast(netlink.Message{
 		Header: netlink.Header{
 			Type:  netlink.Noop,
 			Flags: netlink.Request,
 		},
 		Data: want,
-	}, group); err != nil {
+	}, group); err != nil && !errors.Is(err, unix.ECONNREFUSED) {
 		t.Fatalf("failed to Multicast message: %v", err)
 	}
 

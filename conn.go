@@ -240,6 +240,13 @@ func (c *Conn) SendTo(m Message, pid uint32) (Message, error) {
 //
 // Multicast only controls the send destination; it does not join any
 // groups. Use JoinGroup or Config.Groups to receive multicast messages.
+// Sending or receiving netlink multicast messages typically requires
+// CAP_NET_ADMIN (see netlink(7)).
+//
+// On some netlink families such as NETLINK_USERSOCK, the kernel may
+// return ECONNREFUSED from sendmsg even when multicast delivery
+// succeeds, because sendmsg also attempts a unicast delivery to port
+// ID 0 (the kernel), which is not a valid peer for that family.
 func (c *Conn) Multicast(m Message, group uint32) (Message, error) {
 	// Wait for any concurrent calls to Execute to finish before proceeding.
 	c.mu.RLock()
