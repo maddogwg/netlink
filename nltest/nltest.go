@@ -138,14 +138,14 @@ type socket struct {
 
 func (c *socket) Close() error { return nil }
 
-func (c *socket) SendMessages(messages []netlink.Message, pid uint32) error {
+func (c *socket) SendMessages(messages []netlink.Message, _ uint32) error {
 	msgs, err := c.fn(messages)
 	c.msgs = append(c.msgs, msgs...)
 	c.err = err
 	return nil
 }
 
-func (c *socket) Send(m netlink.Message, pid uint32, group uint32) error {
+func (c *socket) Send(m netlink.Message, _ uint32, _ uint32) error {
 	c.msgs, c.err = c.fn([]netlink.Message{m})
 	return nil
 }
